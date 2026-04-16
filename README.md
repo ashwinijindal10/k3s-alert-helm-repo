@@ -158,7 +158,7 @@ Run these steps when `Chart.yaml`, `templates/`, or chart behavior changes.
 helm lint .
 helm package . --destination docs/charts
 helm repo index docs/charts \
-  --url https://raw.githubusercontent.com/ashwinijindal10/k3s-alert-helm-repo/main/docs/charts
+  --url https://ashwinijindal10.github.io/k3s-alert-helm-repo/charts
 
 git add Chart.yaml docs/charts/
 git commit -m "chore(release): package chart and update index"

@@ -1,0 +1,72 @@
+schedule: "*/2 * * * *"
+
+image:
+  repository: alpine/k8s
+  tag: "1.31.8"
+
+cronJob:
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  activeDeadlineSeconds: 90
+
+channels:
+  email:
+    enabled: true
+  webhook:
+    enabled: false
+
+smtp:
+  host: ""
+  port: "587"
+  from: ""
+  to: ""
+  secretType: externalSecret
+  mailFormat: structured
+  subjectPrefix: "K3S ALERT"
+  maxLinesPerSection: 5
+  username: ""
+  password: ""
+
+secrets:
+  source: externalSecret
+  name: ext-secrets
+  smtpUsernameKey: username
+  smtpPasswordKey: password
+
+webhook:
+  url: ""
+
+cooldownSeconds: 60
+
+backoff:
+  enabled: true
+  filterMode: strict
+  baseDelaySeconds: 120
+  factor: 2
+  maxDelaySeconds: 36000
+
+rateLimit:
+  enabled: true
+  periodSeconds: 900
+  maxEmails: 5
+
+alerts:
+  podCrashLoop: true
+  podImagePullError: true
+  podError: true
+  nodeNotReady: true
+  nodePressure: true
+
+filters:
+  excludeNamespaces:
+    - kube-system
+    - kube-public
+
+resources:
+  requests:
+    memory: "20Mi"
+    cpu: "5m"
+  limits:
+    memory: "40Mi"
+    cpu: "50m"
