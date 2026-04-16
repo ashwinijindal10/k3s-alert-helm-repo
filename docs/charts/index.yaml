@@ -9,6 +9,6 @@ entries:
     name: k3s-alert
     type: application
     urls:
-    - https://github.com/ashwinijindal10/k3s-alert-helm-repo/charts/k3s-alert-0.3.0.tgz
+    - https://raw.githubusercontent.com/ashwinijindal10/k3s-alert-helm-repo/main/docs/charts/k3s-alert-0.3.0.tgz
     version: 0.3.0
 generated: "2026-04-16T12:42:22.414531+05:30"
