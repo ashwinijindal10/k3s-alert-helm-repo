@@ -1,0 +1,304 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k3s-alert-script
+data:
+  check.sh: |
+    #!/bin/sh
+    set -eu
+
+    STATE_FILE="/tmp/last_alert"
+    LAST_SENT_FILE="/tmp/last_sent"
+    BACKOFF_FILE="/tmp/alert_backoff"
+    EMAIL_RATE_FILE="/tmp/email_rate_limit"
+    COOLDOWN={{ .Values.cooldownSeconds }}
+    BACKOFF_ENABLED={{ .Values.backoff.enabled }}
+    BACKOFF_FILTER_MODE="{{ .Values.backoff.filterMode }}"
+    BACKOFF_BASE_DELAY={{ .Values.backoff.baseDelaySeconds }}
+    BACKOFF_FACTOR={{ .Values.backoff.factor }}
+    BACKOFF_MAX_DELAY={{ .Values.backoff.maxDelaySeconds }}
+    RATE_LIMIT_ENABLED={{ .Values.rateLimit.enabled }}
+    RATE_LIMIT_PERIOD={{ .Values.rateLimit.periodSeconds }}
+    RATE_LIMIT_MAX_EMAILS={{ .Values.rateLimit.maxEmails }}
+
+    ALERTS=""
+    EXCLUDE_NAMESPACES="{{ join "|" .Values.filters.excludeNamespaces }}"
+
+    echo "Running checks..."
+
+    PODS=$(kubectl get pods -A --no-headers 2>/dev/null || true)
+    NODES_STATUS=$(kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{range .status.conditions[*]}{.type}{"="}{.status}{";"}{end}{"\n"}{end}' 2>/dev/null || true)
+    if [ -n "$EXCLUDE_NAMESPACES" ]; then
+      PODS=$(echo "$PODS" | grep -Ev "^($EXCLUDE_NAMESPACES)[[:space:]]" || true)
+    fi
+
+    {{- if .Values.alerts.podCrashLoop }}
+    CRASH=$(echo "$PODS" | grep -E "CrashLoopBackOff" || true)
+    [ -n "$CRASH" ] && ALERTS="$ALERTS\n[CrashLoop]\n$CRASH"
+    {{- end }}
+
+    {{- if .Values.alerts.podImagePullError }}
+    IMG=$(echo "$PODS" | grep -E "ImagePullBackOff|ErrImagePull" || true)
+    [ -n "$IMG" ] && ALERTS="$ALERTS\n[ImagePull]\n$IMG"
+    {{- end }}
+
+    {{- if .Values.alerts.podError }}
+    ERR=$(echo "$PODS" | grep -E "Error|Failed" || true)
+    [ -n "$ERR" ] && ALERTS="$ALERTS\n[Errors]\n$ERR"
+    {{- end }}
+
+    {{- if .Values.alerts.nodeNotReady }}
+    NODE_NOT_READY=$(echo "$NODES_STATUS" | awk -F'|' '$2 !~ /Ready=True/ {print $1"|"$2}' || true)
+    [ -n "$NODE_NOT_READY" ] && ALERTS="$ALERTS\n[NodeNotReady]\n$NODE_NOT_READY"
+    {{- end }}
+
+    {{- if .Values.alerts.nodePressure }}
+    NODE_PRESSURE=$(echo "$NODES_STATUS" | awk -F'|' '
+      {
+        if ($2 ~ /MemoryPressure=True/ || $2 ~ /DiskPressure=True/ || $2 ~ /PIDPressure=True/) {
+          print $0
+        }
+      }
+    ' || true)
+    [ -n "$NODE_PRESSURE" ] && ALERTS="$ALERTS\n[NodePressure]\n$NODE_PRESSURE"
+    {{- end }}
+
+    if [ -z "$ALERTS" ]; then
+      echo "No issues"
+      exit 0
+    fi
+
+    HASH=$(echo "$ALERTS" | md5sum | cut -d' ' -f1)
+    if [ "$BACKOFF_FILTER_MODE" = "strict" ]; then
+      SIMILAR_HASH="$HASH"
+    else
+      SIMILAR_KEY=$(printf '%b\n' "$ALERTS" | grep '^\[' | tr -d '[]' | tr '\n' '|' || true)
+      if [ -z "$SIMILAR_KEY" ]; then
+        SIMILAR_KEY="$HASH"
+      fi
+      SIMILAR_HASH=$(printf '%s' "$SIMILAR_KEY" | md5sum | cut -d' ' -f1)
+    fi
+
+    NOW=$(date +%s)
+    LAST=$(cat $LAST_SENT_FILE 2>/dev/null || echo 0)
+
+    if [ $((NOW - LAST)) -lt $COOLDOWN ]; then
+      echo "Cooldown active"
+      exit 0
+    fi
+
+    should_backoff_skip() {
+      if [ "$BACKOFF_ENABLED" != "true" ]; then
+        return 1
+      fi
+
+      if [ ! -f "$BACKOFF_FILE" ]; then
+        return 1
+      fi
+
+      STORED_HASH=$(awk 'NR==1 {print $1}' "$BACKOFF_FILE" 2>/dev/null || true)
+      NEXT_ALLOWED_TS=$(awk 'NR==1 {print $3}' "$BACKOFF_FILE" 2>/dev/null || echo 0)
+      if [ "$STORED_HASH" = "$SIMILAR_HASH" ] && [ "$NOW" -lt "${NEXT_ALLOWED_TS:-0}" ]; then
+        return 0
+      fi
+      return 1
+    }
+
+    next_backoff_delay() {
+      CURRENT_LEVEL=$1
+      VALUE=$BACKOFF_BASE_DELAY
+      I=0
+      while [ "$I" -lt "$CURRENT_LEVEL" ]; do
+        VALUE=$((VALUE * BACKOFF_FACTOR))
+        if [ "$VALUE" -ge "$BACKOFF_MAX_DELAY" ]; then
+          VALUE=$BACKOFF_MAX_DELAY
+          break
+        fi
+        I=$((I + 1))
+      done
+      echo "$VALUE"
+    }
+
+    if should_backoff_skip; then
+      echo "Exponential backoff active for similar alert"
+      exit 0
+    fi
+
+    count_section_lines() {
+      SECTION="$1"
+      printf '%s\n' "$FULL_BODY" | awk -v sec="$SECTION" '
+        $0 == "[" sec "]" { in_sec = 1; next }
+        $0 ~ /^\[/ { in_sec = 0 }
+        in_sec && NF { c++ }
+        END { print c + 0 }
+      '
+    }
+
+    render_section_lines() {
+      SECTION="$1"
+      LIMIT="$2"
+      printf '%s\n' "$FULL_BODY" | awk -v sec="$SECTION" -v lim="$LIMIT" '
+        $0 == "[" sec "]" { in_sec = 1; next }
+        $0 ~ /^\[/ { in_sec = 0 }
+        in_sec && NF {
+          if (c < lim) {
+            print
+          }
+          c++
+        }
+      '
+    }
+
+    FULL_BODY=$(printf '%b\n' "$ALERTS" | sed '/^$/d')
+    TEMPLATE_MODE="${SMTP_MAIL_FORMAT:-structured}"
+    if [ "$TEMPLATE_MODE" = "full" ]; then
+      TEMPLATE_MODE="structured"
+    elif [ "$TEMPLATE_MODE" = "short" ]; then
+      TEMPLATE_MODE="compact"
+    fi
+    MAX_LINES="${SMTP_MAX_LINES_PER_SECTION:-5}"
+
+    CRASH_COUNT=$(count_section_lines "CrashLoop")
+    IMAGE_COUNT=$(count_section_lines "ImagePull")
+    ERROR_COUNT=$(count_section_lines "Errors")
+    NODE_NOT_READY_COUNT=$(count_section_lines "NodeNotReady")
+    NODE_PRESSURE_COUNT=$(count_section_lines "NodePressure")
+    TOTAL_COUNT=$((CRASH_COUNT + IMAGE_COUNT + ERROR_COUNT + NODE_NOT_READY_COUNT + NODE_PRESSURE_COUNT))
+
+    if [ "$NODE_NOT_READY_COUNT" -gt 0 ] || [ "$NODE_PRESSURE_COUNT" -gt 0 ] || [ "$TOTAL_COUNT" -ge 10 ]; then
+      SEVERITY="CRITICAL"
+    elif [ "$TOTAL_COUNT" -ge 4 ]; then
+      SEVERITY="HIGH"
+    elif [ "$TOTAL_COUNT" -ge 2 ]; then
+      SEVERITY="MEDIUM"
+    else
+      SEVERITY="LOW"
+    fi
+
+    SUBJECT_PREFIX="${SMTP_SUBJECT_PREFIX:-K3S ALERT}"
+    SUBJECT="$SUBJECT_PREFIX $SEVERITY CrashLoop:$CRASH_COUNT ImagePull:$IMAGE_COUNT Errors:$ERROR_COUNT NodeNotReady:$NODE_NOT_READY_COUNT NodePressure:$NODE_PRESSURE_COUNT"
+
+    if [ "$TEMPLATE_MODE" = "compact" ]; then
+      BODY="Summary: severity=$SEVERITY total=$TOTAL_COUNT crashloop=$CRASH_COUNT imagepull=$IMAGE_COUNT errors=$ERROR_COUNT nodeNotReady=$NODE_NOT_READY_COUNT nodePressure=$NODE_PRESSURE_COUNT\n\nTop lines:\n$(printf '%s\n' "$FULL_BODY" | head -n 8)"
+    else
+      BODY="K3S Alert Summary\nGeneratedAt: $(date -u +%Y-%m-%dT%H:%M:%SZ)\nSeverity: $SEVERITY\nTotalIssues: $TOTAL_COUNT\n\nBreakdown:\n- CrashLoop: $CRASH_COUNT\n- ImagePull: $IMAGE_COUNT\n- Errors: $ERROR_COUNT\n- NodeNotReady: $NODE_NOT_READY_COUNT\n- NodePressure: $NODE_PRESSURE_COUNT\n"
+
+      if [ "$CRASH_COUNT" -gt 0 ]; then
+        BODY="$BODY\n\n[CrashLoop]\n$(render_section_lines "CrashLoop" "$MAX_LINES")"
+      fi
+      if [ "$IMAGE_COUNT" -gt 0 ]; then
+        BODY="$BODY\n\n[ImagePull]\n$(render_section_lines "ImagePull" "$MAX_LINES")"
+      fi
+      if [ "$ERROR_COUNT" -gt 0 ]; then
+        BODY="$BODY\n\n[Errors]\n$(render_section_lines "Errors" "$MAX_LINES")"
+      fi
+      if [ "$NODE_NOT_READY_COUNT" -gt 0 ]; then
+        BODY="$BODY\n\n[NodeNotReady]\n$(render_section_lines "NodeNotReady" "$MAX_LINES")"
+      fi
+      if [ "$NODE_PRESSURE_COUNT" -gt 0 ]; then
+        BODY="$BODY\n\n[NodePressure]\n$(render_section_lines "NodePressure" "$MAX_LINES")"
+      fi
+
+      BODY="$BODY\n\nControls: cooldown=${COOLDOWN}s, backoff=${BACKOFF_ENABLED}/${BACKOFF_FILTER_MODE}, rateLimit=${RATE_LIMIT_ENABLED}(${RATE_LIMIT_MAX_EMAILS}/${RATE_LIMIT_PERIOD}s)"
+    fi
+
+    json_escape() {
+      printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; :a;N;$!ba;s/\n/\\n/g; s/\r/\\r/g'
+    }
+
+    can_send_email() {
+      if [ "$RATE_LIMIT_ENABLED" != "true" ]; then
+        return 0
+      fi
+
+      NOW_TS=$(date +%s)
+      WINDOW_START=$((NOW_TS - RATE_LIMIT_PERIOD))
+
+      if [ -f "$EMAIL_RATE_FILE" ]; then
+        awk -v min="$WINDOW_START" '$1 >= min { print $1 }' "$EMAIL_RATE_FILE" > "${EMAIL_RATE_FILE}.tmp" || true
+        mv "${EMAIL_RATE_FILE}.tmp" "$EMAIL_RATE_FILE"
+      else
+        : > "$EMAIL_RATE_FILE"
+      fi
+
+      SENT_COUNT=$(wc -l < "$EMAIL_RATE_FILE" | tr -d ' ')
+      if [ "$SENT_COUNT" -ge "$RATE_LIMIT_MAX_EMAILS" ]; then
+        return 1
+      fi
+
+      echo "$NOW_TS" >> "$EMAIL_RATE_FILE"
+      return 0
+    }
+
+    SENT_ANY=0
+
+    {{- if .Values.channels.email.enabled }}
+    if [ -n "${SMTP_HOST:-}" ] && [ -n "${SMTP_TO:-}" ] && [ -n "${SMTP_USERNAME:-}" ] && [ -n "${SMTP_PASSWORD:-}" ]; then
+      RECIPIENTS=$(printf '%s' "$SMTP_TO" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed '/^$/d')
+      if [ -z "$RECIPIENTS" ]; then
+        echo "No valid SMTP recipients found"
+        exit 0
+      fi
+
+      set --
+      for recipient in $RECIPIENTS; do
+        set -- "$@" --mail-rcpt "$recipient"
+      done
+
+      if ! can_send_email; then
+        echo "Email rate limit active: max $RATE_LIMIT_MAX_EMAILS emails per $RATE_LIMIT_PERIOD seconds"
+      else
+        if [ -n "${SMTP_LOGIN_OPTIONS:-}" ]; then
+          echo -e "Subject: $SUBJECT\n\n$BODY" | curl -sS --connect-timeout 10 --max-time 20 --url "smtp://$SMTP_HOST:$SMTP_PORT" \
+            --ssl-reqd \
+            --mail-from "$SMTP_FROM" \
+            "$@" \
+            --login-options "$SMTP_LOGIN_OPTIONS" \
+            --upload-file - \
+            --user "$SMTP_USERNAME:$SMTP_PASSWORD" >/dev/null
+        else
+          echo -e "Subject: $SUBJECT\n\n$BODY" | curl -sS --connect-timeout 10 --max-time 20 --url "smtp://$SMTP_HOST:$SMTP_PORT" \
+            --ssl-reqd \
+            --mail-from "$SMTP_FROM" \
+            "$@" \
+            --upload-file - \
+            --user "$SMTP_USERNAME:$SMTP_PASSWORD" >/dev/null
+        fi
+        echo "Email alert sent"
+        SENT_ANY=1
+      fi
+    else
+      echo "Email channel enabled but required SMTP vars are missing"
+    fi
+    {{- end }}
+
+    {{- if .Values.channels.webhook.enabled }}
+    if [ -n "${WEBHOOK_URL:-}" ]; then
+      PAYLOAD=$(printf '{"subject":"%s","message":"%s"}' "$(json_escape "$SUBJECT")" "$(json_escape "$BODY")")
+      curl -sS --connect-timeout 10 --max-time 20 -X POST "$WEBHOOK_URL" \
+        -H "Content-Type: application/json" \
+        -d "$PAYLOAD" >/dev/null
+      echo "Webhook alert sent"
+      SENT_ANY=1
+    else
+      echo "Webhook channel enabled but WEBHOOK_URL is empty"
+    fi
+    {{- end }}
+
+    if [ "$SENT_ANY" -eq 1 ]; then
+      echo "$HASH" > "$STATE_FILE"
+      echo "$NOW" > "$LAST_SENT_FILE"
+
+      if [ "$BACKOFF_ENABLED" = "true" ]; then
+        STORED_HASH=$(awk 'NR==1 {print $1}' "$BACKOFF_FILE" 2>/dev/null || true)
+        STORED_LEVEL=$(awk 'NR==1 {print $2}' "$BACKOFF_FILE" 2>/dev/null || echo 0)
+        if [ "$STORED_HASH" = "$SIMILAR_HASH" ]; then
+          NEXT_LEVEL=$((STORED_LEVEL + 1))
+        else
+          NEXT_LEVEL=0
+        fi
+        DELAY=$(next_backoff_delay "$NEXT_LEVEL")
+        NEXT_ALLOWED=$((NOW + DELAY))
+        echo "$SIMILAR_HASH $NEXT_LEVEL $NEXT_ALLOWED" > "$BACKOFF_FILE"
+      fi
+    fi

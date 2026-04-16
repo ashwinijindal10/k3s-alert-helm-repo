@@ -1,0 +1,75 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: k3s-alert
+spec:
+  schedule: "{{ .Values.schedule }}"
+  concurrencyPolicy: {{ .Values.cronJob.concurrencyPolicy }}
+  successfulJobsHistoryLimit: {{ .Values.cronJob.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.cronJob.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: {{ .Values.cronJob.activeDeadlineSeconds }}
+      template:
+        spec:
+          serviceAccountName: k3s-alert
+          restartPolicy: OnFailure
+          containers:
+            - name: alert
+              image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              command: ["/bin/sh", "/scripts/check.sh"]
+              env:
+{{- if .Values.channels.email.enabled }}
+                - name: SMTP_HOST
+                  value: "{{ .Values.smtp.host }}"
+                - name: SMTP_PORT
+                  value: "{{ .Values.smtp.port }}"
+                - name: SMTP_FROM
+                  value: "{{ .Values.smtp.from }}"
+                - name: SMTP_TO
+{{- if kindIs "slice" .Values.smtp.to }}
+                  value: "{{ join "," .Values.smtp.to }}"
+{{- else }}
+                  value: "{{ .Values.smtp.to }}"
+{{- end }}
+                - name: SMTP_LOGIN_OPTIONS
+                  value: "{{ .Values.smtp.loginOptions }}"
+                - name: SMTP_MAIL_FORMAT
+                  value: "{{ .Values.smtp.mailFormat }}"
+                - name: SMTP_SUBJECT_PREFIX
+                  value: "{{ .Values.smtp.subjectPrefix }}"
+                - name: SMTP_MAX_LINES_PER_SECTION
+                  value: "{{ .Values.smtp.maxLinesPerSection }}"
+                - name: SMTP_USERNAME
+{{- if eq .Values.smtp.secretType "plain" }}
+                  value: "{{ .Values.smtp.username }}"
+{{- else }}
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.secrets.name }}
+                      key: {{ .Values.secrets.smtpUsernameKey }}
+{{- end }}
+                - name: SMTP_PASSWORD
+{{- if eq .Values.smtp.secretType "plain" }}
+                  value: "{{ .Values.smtp.password }}"
+{{- else }}
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.secrets.name }}
+                      key: {{ .Values.secrets.smtpPasswordKey }}
+{{- end }}
+{{- end }}
+{{- if .Values.channels.webhook.enabled }}
+                - name: WEBHOOK_URL
+                  value: "{{ .Values.webhook.url }}"
+{{- end }}
+              volumeMounts:
+                - name: script
+                  mountPath: /scripts
+              resources:
+{{ toYaml .Values.resources | indent 16 }}
+          volumes:
+            - name: script
+              configMap:
+                name: k3s-alert-script
+                defaultMode: 0755
