@@ -8,7 +8,7 @@ cronJob:
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 1
-  activeDeadlineSeconds: 90
+  activeDeadlineSeconds: 100
 
 channels:
   email:
