@@ -212,6 +212,7 @@ helm search repo k3s-alert/k3s-alert --versions
 - `channels.email.enabled`: `true`
 - `channels.webhook.enabled`: `false`
 - `cooldownSeconds`: `60`
+- `logLevel`: `info` (`debug`, `info`, `warning`, `error`)
 - `smtp.mailFormat`: `structured`
 - `smtp.subjectPrefix`: `K3S ALERT`
 - `smtp.maxLinesPerSection`: `5`
@@ -243,6 +244,13 @@ helm search repo k3s-alert/k3s-alert --versions
 ## Configuration Parameter Details
 
 ### Alert switches
+
+### Logging
+
+- `logLevel`
+  - Controls runtime log verbosity for `check.sh`.
+  - Supported values: `debug`, `info`, `warning`, `error`.
+  - Default `info` gives lifecycle and delivery summaries.
 
 - `alerts.podCrashLoop`
   - Detects `CrashLoopBackOff` pod states.

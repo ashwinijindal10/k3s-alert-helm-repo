@@ -19,6 +19,8 @@ spec:
               image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
               command: ["/bin/sh", "/scripts/check.sh"]
               env:
+                - name: LOG_LEVEL
+                  value: "{{ .Values.logLevel }}"
 {{- if .Values.channels.email.enabled }}
                 - name: SMTP_HOST
                   value: "{{ .Values.smtp.host }}"

@@ -39,6 +39,7 @@ webhook:
   url: ""
 
 cooldownSeconds: 60
+logLevel: info
 
 backoff:
   enabled: true

@@ -49,6 +49,48 @@ ALERTS=""
 RAW_ALERTS=""
 RESTART_ALERT_TARGETS=""
 EXCLUDE_NAMESPACES="{{ join "|" .Values.filters.excludeNamespaces }}"
+LOG_LEVEL="${LOG_LEVEL:-info}"
+
+level_to_num() {
+  case "$1" in
+    debug) echo 10 ;;
+    info) echo 20 ;;
+    warning) echo 30 ;;
+    error) echo 40 ;;
+    *) echo 20 ;;
+  esac
+}
+
+should_log() {
+  MSG_LEVEL_NUM=$(level_to_num "$1")
+  CUR_LEVEL_NUM=$(level_to_num "$LOG_LEVEL")
+  [ "$MSG_LEVEL_NUM" -ge "$CUR_LEVEL_NUM" ]
+}
+
+log_msg() {
+  LEVEL="$1"
+  shift
+  if should_log "$LEVEL"; then
+    TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    printf '%s [%s] %s\n' "$TS" "$LEVEL" "$*"
+  fi
+}
+
+log_debug() {
+  log_msg debug "$*"
+}
+
+log_info() {
+  log_msg info "$*"
+}
+
+log_warn() {
+  log_msg warning "$*"
+}
+
+log_error() {
+  log_msg error "$*"
+}
 
 run_kubectl() {
   API_CALLS=$((API_CALLS + 1))
@@ -93,7 +135,7 @@ emit_runtime_metrics() {
   POD_ROWS=$(count_non_empty_lines "${PODS:-}")
   NODE_ROWS=$(count_non_empty_lines "${NODES_STATUS:-}")
   WARN_ROWS=$(count_non_empty_lines "${WARNING_EVENTS:-}")
-  echo "Run metrics: durationSec=$DURATION_SEC apiCalls=$API_CALLS podRows=$POD_ROWS nodeRows=$NODE_ROWS warningEventRows=$WARN_ROWS totalAlerts=${TOTAL_COUNT:-0} stateOk=$STATE_PERSISTENCE_OK"
+  log_info "Run metrics: durationSec=$DURATION_SEC apiCalls=$API_CALLS podRows=$POD_ROWS nodeRows=$NODE_ROWS warningEventRows=$WARN_ROWS totalAlerts=${TOTAL_COUNT:-0} stateOk=$STATE_PERSISTENCE_OK"
 }
 
 
@@ -141,7 +183,7 @@ DEPLOYMENT_HEALTH_MAX_REPORTED_LINES=$(normalize_non_negative_int "$DEPLOYMENT_H
 
 load_persistent_state
 
-echo "Running checks..."
+log_info "Starting checks: logLevel=$LOG_LEVEL cooldown=${COOLDOWN}s backoff=${BACKOFF_ENABLED}/${BACKOFF_FILTER_MODE} rateLimit=${RATE_LIMIT_ENABLED}"
 
 PODS=$(run_kubectl get pods -A --no-headers)
 NODES_STATUS=$(run_kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{range .status.conditions[*]}{.type}{"="}{.status}{";"}{end}{"\n"}{end}')
@@ -160,7 +202,7 @@ RAW_ALERTS="$ALERTS"
 filter_new_alerts
 
 if [ -z "$RAW_ALERTS" ]; then
-  echo "No issues"
+  log_info "No issues"
   build_next_notified_state 0
   save_persistent_state 0 || true
   emit_runtime_metrics
@@ -168,7 +210,7 @@ if [ -z "$RAW_ALERTS" ]; then
 fi
 
 if [ -z "$ALERTS" ]; then
-  echo "No new issues (active issues already notified)"
+  log_info "No new issues (active issues already notified)"
   build_next_notified_state 0
   save_persistent_state 0 || true
   emit_runtime_metrics
@@ -205,7 +247,7 @@ DETECTED_ALERTS=""
 [ "$POD_RESTART_COUNT" -gt 0 ] && append_csv DETECTED_ALERTS "PodRestarts:$POD_RESTART_COUNT"
 [ -z "$DETECTED_ALERTS" ] && DETECTED_ALERTS="none"
 
-echo "Alert scan summary: total=$TOTAL_COUNT detected=$DETECTED_ALERTS"
+log_info "Alert scan summary: total=$TOTAL_COUNT detected=$DETECTED_ALERTS"
 
 HASH=$(echo "$ALERTS" | md5sum | cut -d' ' -f1)
 if [ "$BACKOFF_FILTER_MODE" = "strict" ]; then
@@ -221,7 +263,7 @@ fi
 NOW=$(date +%s)
 
 if [ $((NOW - LAST_SENT_TS)) -lt $COOLDOWN ]; then
-  echo "Alert delivery: sent=0 skipped=cooldown_active total=$TOTAL_COUNT detected=$DETECTED_ALERTS"
+  log_warn "Alert delivery: sent=0 skipped=cooldown_active total=$TOTAL_COUNT detected=$DETECTED_ALERTS"
   build_next_notified_state 0
   save_persistent_state 0 || true
   emit_runtime_metrics
@@ -229,7 +271,7 @@ if [ $((NOW - LAST_SENT_TS)) -lt $COOLDOWN ]; then
 fi
 
 if should_backoff_skip; then
-  echo "Alert delivery: sent=0 skipped=backoff_active total=$TOTAL_COUNT detected=$DETECTED_ALERTS"
+  log_warn "Alert delivery: sent=0 skipped=backoff_active total=$TOTAL_COUNT detected=$DETECTED_ALERTS"
   build_next_notified_state 0
   save_persistent_state 0 || true
   emit_runtime_metrics

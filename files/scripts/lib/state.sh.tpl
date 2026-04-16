@@ -54,7 +54,7 @@ prune_oldest_state_entries() {
 
 warn_state() {
   MSG="$1"
-  echo "State warning: $MSG"
+  log_warn "State warning: $MSG"
   STATE_PERSISTENCE_OK=0
 }
 
@@ -112,6 +112,10 @@ load_persistent_state() {
   if [ -n "$EMAIL_RATE_RAW" ]; then
     printf '%s\n' "$EMAIL_RATE_RAW" | sed '/^$/d' | tail -n "$MAX_EMAIL_RATE_LINES" > "$EMAIL_RATE_FILE"
   fi
+
+  NOTIFIED_COUNT=$(wc -l < "$STATE_NOTIFIED_KEYS_FILE" | tr -d ' ')
+  RATE_COUNT=$(wc -l < "$EMAIL_RATE_FILE" | tr -d ' ')
+  log_debug "State loaded: notifiedKeys=$NOTIFIED_COUNT lastSent=$LAST_SENT_TS backoffLevel=$BACKOFF_LEVEL_STATE rateHistory=$RATE_COUNT"
 }
 
 build_next_notified_state() {
@@ -192,7 +196,7 @@ save_persistent_state() {
 
     rm -f "$CM_RENDER_FILE"
     PRUNE_ATTEMPT=$((PRUNE_ATTEMPT + 1))
-    echo "State info: rendered payload ${CM_SIZE_BYTES}B exceeds limit ${MAX_STATE_CONFIGMAP_BYTES}B; pruning oldest persisted entries (attempt $PRUNE_ATTEMPT/$MAX_STATE_SIZE_PRUNE_ATTEMPTS)"
+    log_warn "State info: rendered payload ${CM_SIZE_BYTES}B exceeds limit ${MAX_STATE_CONFIGMAP_BYTES}B; pruning oldest persisted entries (attempt $PRUNE_ATTEMPT/$MAX_STATE_SIZE_PRUNE_ATTEMPTS)"
 
     prune_oldest_state_entries "$NEXT_NOTIFIED_KEYS_FILE"
     prune_oldest_state_entries "$EMAIL_RATE_FILE"
