@@ -65,15 +65,45 @@ Backward compatible aliases are also supported:
 - `helm` installed
 - SMTP credentials available (Secret/ExternalSecret or plain values)
 
-### Setup and installation steps
+### Option A: Install from published Helm repository
 
-1. Go to repo root.
+1. Add and update repository.
 
 ```bash
-cd /path/to/home-cloud-setup
+helm repo add k3s-alert https://raw.githubusercontent.com/ashwinijindal10/k3s-alert-helm-repo/main/docs/charts
+helm repo update
 ```
 
-2. Choose credential mode.
+2. Create your override values file (example: `k3s-alert-values.yaml`).
+
+```yaml
+channels:
+  email:
+    enabled: true
+  webhook:
+    enabled: false
+
+smtp:
+  to: "you@example.com,team@example.com"
+```
+
+3. Install or upgrade.
+
+```bash
+helm upgrade --install k3s-alert k3s-alert/k3s-alert \
+  -n kube-system  \
+  -f k3s-alert-values.yaml
+```
+
+### Option B: Install from local source
+
+1. Go to this chart repository root (the folder containing `Chart.yaml`).
+
+```bash
+cd /path/to/k3s-alert-helm-repo
+```
+
+2. Create your override values file (example: `k3s-alert-values.yaml`) and choose credential mode.
 
 Secret/ExternalSecret mode:
 
@@ -97,39 +127,49 @@ smtp:
   password: "your-smtp-password"
 ```
 
-3. Override values (recommended) by creating a custom values file, for example `k3s-alert-values.yaml`.
-
-```yaml
-channels:
-  email:
-    enabled: true
-  webhook:
-    enabled: false
-
-smtp:
-  to: "you@example.com,team@example.com"
-```
-
-4. Install/upgrade the chart.
+3. Install or upgrade.
 
 ```bash
-helm upgrade --install k3s-alert ./k3s/helm/k3s-alert \
+helm upgrade --install k3s-alert . \
   -n kube-system --create-namespace \
   -f k3s-alert-values.yaml
 ```
 
-5. Verify resources.
+### Post-install checks
 
 ```bash
 kubectl get cronjob -n kube-system k3s-alert
+kubectl get jobs -n kube-system --sort-by=.metadata.creationTimestamp
 kubectl get pods -n kube-system -l job-name
+kubectl logs -n kube-system job/<latest-job-name>
 ```
 
-6. Check latest job logs.
+## Rebuild and publish chart (after changes)
+
+Run these steps when `Chart.yaml`, `templates/`, or chart behavior changes.
+
+1. Bump `version` in `Chart.yaml` for each release.
+2. Package chart into `docs/charts`.
+3. Rebuild chart index with the same repository base URL.
+4. Commit and push.
 
 ```bash
-kubectl get jobs -n kube-system --sort-by=.metadata.creationTimestamp
-kubectl logs -n kube-system job/<latest-job-name>
+# from repo root
+helm lint .
+helm package . --destination docs/charts
+helm repo index docs/charts \
+  --url https://raw.githubusercontent.com/ashwinijindal10/k3s-alert-helm-repo/main/docs/charts
+
+git add Chart.yaml docs/charts/
+git commit -m "chore(release): package chart and update index"
+git push origin main
+```
+
+Consumer side refresh after publish:
+
+```bash
+helm repo update
+helm search repo k3s-alert/k3s-alert --versions
 ```
 
 ## Default values summary
@@ -388,7 +428,7 @@ kubectl logs -n kube-system job/<latest-job-name>
 Render templates before apply:
 
 ```bash
-helm template k3s-alert ./k3s/helm/k3s-alert -n kube-system
+helm template k3s-alert . -n kube-system
 ```
 
 ## How To Test
@@ -396,7 +436,7 @@ helm template k3s-alert ./k3s/helm/k3s-alert -n kube-system
 ### 1) Deploy chart
 
 ```bash
-helm upgrade --install k3s-alert ./k3s/helm/k3s-alert -n kube-system --create-namespace
+helm upgrade --install k3s-alert . -n kube-system --create-namespace
 kubectl get cronjob -n kube-system k3s-alert
 ```
 
