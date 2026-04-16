@@ -22,11 +22,18 @@ jobs:
       - name: Setup Helm
         uses: azure/setup-helm@v4
 
+      - name: Install shellcheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
       - name: Run script syntax tests
         shell: bash
         run: |
           set -euo pipefail
-          sh ./scripts/test/run-syntax-check.sh .
+          STRICT_MODE=1 sh ./scripts/test/run-syntax-check.sh .
 
       - name: Run mock integration tests
         shell: bash
