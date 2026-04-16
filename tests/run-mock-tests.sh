@@ -142,7 +142,7 @@ EOF
 chmod +x "$MOCK_BIN/kubectl" "$MOCK_BIN/curl"
 
 RENDERED_SCRIPT="$TMP_DIR/check.sh"
-"$ROOT_DIR/scripts/test/extract-rendered-check.sh" "$ROOT_DIR" "$RENDERED_SCRIPT"
+"$ROOT_DIR/tests/extract-rendered-check.sh" "$ROOT_DIR" "$RENDERED_SCRIPT"
 chmod +x "$RENDERED_SCRIPT"
 
 run_script() {

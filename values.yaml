@@ -1,4 +1,9 @@
-schedule: "*/2 * * * *"
+schedule:
+  type: interval
+  cron: null
+  intervalMinutes: 2
+  intervalHours: null
+  intervalDays: null
 
 image:
   repository: alpine/k8s
@@ -13,30 +18,19 @@ cronJob:
 channels:
   email:
     enabled: true
+    host: ""
+    port: "587"
+    from: ""
+    to: ""
+    loginOptions: ""
+    mailFormat: structured
+    subjectPrefix: "K3S ALERT"
+    maxLinesPerSection: 5
+    username: null
+    password: null
   webhook:
     enabled: false
-
-smtp:
-  host: ""
-  port: "587"
-  from: ""
-  to: ""
-  secretType: externalSecret
-  loginOptions: ""
-  mailFormat: structured
-  subjectPrefix: "K3S ALERT"
-  maxLinesPerSection: 5
-  username: ""
-  password: ""
-
-secrets:
-  source: externalSecret
-  name: ext-secrets
-  smtpUsernameKey: username
-  smtpPasswordKey: password
-
-webhook:
-  url: ""
+    url: null
 
 cooldownSeconds: 60
 logLevel: info

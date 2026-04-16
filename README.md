@@ -54,28 +54,26 @@ Supported channels:
 
 Payload is plain-text summary for both channels.
 
-## Secret input modes
+## Credential input modes
 
-`secrets.source` supports:
+For SMTP auth and webhook URL, set either:
 
-- `secret`: Read SMTP credentials from an existing Kubernetes Secret.
-- `externalSecret`: Same as `secret`; secret is expected to be created by ExternalSecret controller.
+- plain value (`value`)
+- Kubernetes ref (`valueFrom`), for example `secretKeyRef`
 
-For SMTP authentication, you can also bypass secrets and pass username/password directly in values by using `smtp.secretType: plain`.
-
-By default, curl auto-negotiates SMTP auth. If your provider needs explicit auth mode, set `smtp.loginOptions` (example: `AUTH=PLAIN`).
+By default, curl auto-negotiates SMTP auth. If your provider needs explicit auth mode, set `channels.email.loginOptions` (example: `AUTH=PLAIN`).
 
 For email body template, use:
 
-- `smtp.mailFormat: structured` (default, recommended)
-- `smtp.mailFormat: compact` (short digest)
+- `channels.email.mailFormat: structured` (default, recommended)
+- `channels.email.mailFormat: compact` (short digest)
 
 Backward compatible aliases are also supported:
 
 - `full` -> `structured`
 - `short` -> `compact`
 
-`smtp.to` supports both:
+`channels.email.to` supports both:
 
 - Comma-separated string: `"a@example.com,b@example.com"`
 - YAML list:
@@ -89,7 +87,7 @@ Backward compatible aliases are also supported:
 - A running k3s/k8s cluster
 - `kubectl` configured for the target cluster
 - `helm` installed
-- SMTP credentials available (Secret/ExternalSecret or plain values)
+- SMTP credentials available (plain values or Kubernetes `valueFrom` refs)
 
 ### Option A: Install from published Helm repository
 
@@ -106,11 +104,9 @@ helm repo update
 channels:
   email:
     enabled: true
+    to: "you@example.com,team@example.com"
   webhook:
     enabled: false
-
-smtp:
-  to: "you@example.com,team@example.com"
 ```
 
 3. Install or upgrade.
@@ -131,26 +127,38 @@ cd /path/to/k3s-alert-helm-repo
 
 2. Create your override values file (example: `k3s-alert-values.yaml`) and choose credential mode.
 
-Secret/ExternalSecret mode:
+`valueFrom` mode:
 
 ```yaml
-smtp:
-  secretType: externalSecret
-
-secrets:
-  source: externalSecret
-  name: ext-secrets
-  smtpUsernameKey: username
-  smtpPasswordKey: password
+channels:
+  email:
+    username:
+      valueFrom:
+        secretKeyRef:
+          name: ext-secrets
+          key: username
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: ext-secrets
+          key: password
+  webhook:
+    url:
+      valueFrom:
+        secretKeyRef:
+          name: ext-secrets
+          key: webhook
 ```
 
 Plain mode:
 
 ```yaml
-smtp:
-  secretType: plain
-  username: "your-smtp-username"
-  password: "your-smtp-password"
+channels:
+  email:
+    username: "your-smtp-username"
+    password: "your-smtp-password"
+  webhook:
+    url: "https://hooks.example.com/alerts"
 ```
 
 3. Install or upgrade.
@@ -208,14 +216,16 @@ helm search repo k3s-alert/k3s-alert --versions
 
 ## Default values summary
 
-- `schedule`: `*/2 * * * *`
+- `schedule.type`: `interval`
+- `schedule.cron`: `null` (used only when `schedule.type: cron`)
+- `schedule.intervalMinutes`: `2` (default, every 2 minutes)
 - `channels.email.enabled`: `true`
 - `channels.webhook.enabled`: `false`
 - `cooldownSeconds`: `60`
 - `logLevel`: `info` (`debug`, `info`, `warning`, `error`)
-- `smtp.mailFormat`: `structured`
-- `smtp.subjectPrefix`: `K3S ALERT`
-- `smtp.maxLinesPerSection`: `5`
+- `channels.email.mailFormat`: `structured`
+- `channels.email.subjectPrefix`: `K3S ALERT`
+- `channels.email.maxLinesPerSection`: `5`
 - `backoff.enabled`: `true`
 - `backoff.filterMode`: `strict`
 - `backoff.baseDelaySeconds`: `120`
@@ -340,9 +350,23 @@ helm search repo k3s-alert/k3s-alert --versions
   - State is persisted across CronJob runs.
 
 - `schedule`
-  - Poll interval for the CronJob.
-  - `*/2 * * * *` is a good default for low overhead.
-  - Increase interval for very large clusters if API pressure is a concern.
+  - Human-readable poll interval for the CronJob.
+  - `schedule.type` supports:
+    - `interval` for simple interval scheduling
+    - `cron` for explicit cron expression
+  - For `schedule.type: interval`, set exactly one of:
+    - `schedule.intervalMinutes` (1-59)
+    - `schedule.intervalHours` (1-23)
+    - `schedule.intervalDays` (1-31)
+  - For `schedule.type: cron`, set:
+    - `schedule.cron` as 5-field cron (example: `0 */6 * * *`)
+    - `interval*` fields are ignored in cron mode.
+  - Examples:
+    - `intervalMinutes: 2` -> `*/2 * * * *`
+    - `intervalHours: 6` -> `0 */6 * * *`
+    - `intervalDays: 1` -> `0 0 */1 * *`
+    - `type: cron` + `cron: "0 */6 * * *"` -> `0 */6 * * *`
+  - Use 2 minutes or higher for low overhead.
 
 ## Configuration examples
 
@@ -389,27 +413,28 @@ channels:
   webhook:
     enabled: false
 
-smtp:
-  secretType: plain
-  mailFormat: compact
-  subjectPrefix: "K3S ALERT"
-  maxLinesPerSection: 5
-  host: "smtp.email.ap-hyderabad-1.oci.oraclecloud.com"
-  port: "587"
-  from: "noreply@example.com"
-  to: "ops-team@example.com,team-alerts@example.com"
-  username: "your-smtp-username"
-  password: "your-smtp-password"
-  loginOptions: "AUTH=PLAIN"
+  email:
+    enabled: true
+    mailFormat: compact
+    subjectPrefix: "K3S ALERT"
+    maxLinesPerSection: 5
+    host: "smtp.email.ap-hyderabad-1.oci.oraclecloud.com"
+    port: "587"
+    from: "noreply@example.com"
+    to: "ops-team@example.com,team-alerts@example.com"
+    username: "your-smtp-username"
+    password: "your-smtp-password"
+    loginOptions: "AUTH=PLAIN"
 ```
 
 List style:
 
 ```yaml
-smtp:
-  to:
-    - "ops-team@example.com"
-    - "team-alerts@example.com"
+channels:
+  email:
+    to:
+      - "ops-team@example.com"
+      - "team-alerts@example.com"
 ```
 
 ### 4) Webhook mode (optional)
@@ -523,11 +548,11 @@ Subject template (auto-generated):
 K3S ALERT HIGH CrashLoop:2 ImagePull:1 Errors:0 NodeNotReady:1 NodePressure:0
 ```
 
-You can customize prefix with `smtp.subjectPrefix`.
+You can customize prefix with `channels.email.subjectPrefix`.
 
 ### 8) Mail format output examples
 
-If `smtp.mailFormat: structured`, the email includes summary + grouped details:
+If `channels.email.mailFormat: structured`, the email includes summary + grouped details:
 
 ```text
 Subject: Kubernetes Alert
@@ -542,7 +567,7 @@ default reports-59fbb8fd6c-kx2dr 0/1 ImagePullBackOff 5 (3m ago) 12m
 k3s-node-2|Ready=False;DiskPressure=False;MemoryPressure=False;PIDPressure=False;
 ```
 
-If `smtp.mailFormat: compact`, the email is short digest style:
+If `channels.email.mailFormat: compact`, the email is short digest style:
 
 ```text
 Subject: Kubernetes Alert
@@ -578,7 +603,8 @@ channels:
 
 ## Resource-friendly operation notes
 
-- Keep schedule at 2m or higher for low API load.
+- Keep `schedule.intervalMinutes` at `2` or higher for low API load.
+- If using cron mode, keep cadence reasonable (for example every 2+ minutes) to avoid API pressure.
 - Use `filters.excludeNamespaces` to reduce noisy/system namespaces.
 - Keep only required alert classes enabled.
 - Concurrency policy is `Forbid` to avoid overlapping jobs.
@@ -624,7 +650,7 @@ helm template k3s-alert . -n kube-system
 1. Lint and syntax-check rendered runtime script.
 
 ```bash
-./scripts/test/run-syntax-check.sh .
+./tests/run-syntax-check.sh .
 ```
 
 What this does:
@@ -640,6 +666,12 @@ What this does:
 ./tests/run-mock-tests.sh
 ```
 
+3. Run Helm template regression tests (schedule + env rendering validation).
+
+```bash
+./tests/run-template-regression-tests.sh
+```
+
 What this validates:
 
 - First detection sends alert
@@ -647,6 +679,8 @@ What this validates:
 - Resolution clears active dedupe state
 - Reappearance alerts again
 - Outbound notification count matches expected behavior
+- Schedule mode rendering/validation (`interval` and `cron`)
+- `valueFrom` rendering for email credentials and webhook URL
 
 ### 1) Deploy chart
 

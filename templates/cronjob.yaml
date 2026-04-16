@@ -3,7 +3,7 @@ kind: CronJob
 metadata:
   name: k3s-alert
 spec:
-  schedule: "{{ .Values.schedule }}"
+  schedule: "{{ include "k3s-alert.cronSchedule" . }}"
   concurrencyPolicy: {{ .Values.cronJob.concurrencyPolicy }}
   successfulJobsHistoryLimit: {{ .Values.cronJob.successfulJobsHistoryLimit }}
   failedJobsHistoryLimit: {{ .Values.cronJob.failedJobsHistoryLimit }}
@@ -23,25 +23,25 @@ spec:
                   value: "{{ .Values.logLevel }}"
 {{- if .Values.channels.email.enabled }}
                 - name: SMTP_HOST
-                  value: "{{ .Values.smtp.host }}"
+                  value: "{{ .Values.channels.email.host }}"
                 - name: SMTP_PORT
-                  value: "{{ .Values.smtp.port }}"
+                  value: "{{ .Values.channels.email.port }}"
                 - name: SMTP_FROM
-                  value: "{{ .Values.smtp.from }}"
+                  value: "{{ .Values.channels.email.from }}"
                 - name: SMTP_TO
-{{- if kindIs "slice" .Values.smtp.to }}
-                  value: "{{ join "," .Values.smtp.to }}"
+{{- if kindIs "slice" .Values.channels.email.to }}
+                  value: "{{ join "," .Values.channels.email.to }}"
 {{- else }}
-                  value: "{{ .Values.smtp.to }}"
+                  value: "{{ .Values.channels.email.to }}"
 {{- end }}
                 - name: SMTP_LOGIN_OPTIONS
-                  value: "{{ .Values.smtp.loginOptions }}"
+                  value: "{{ .Values.channels.email.loginOptions }}"
                 - name: SMTP_MAIL_FORMAT
-                  value: "{{ .Values.smtp.mailFormat }}"
+                  value: "{{ .Values.channels.email.mailFormat }}"
                 - name: SMTP_SUBJECT_PREFIX
-                  value: "{{ .Values.smtp.subjectPrefix }}"
+                  value: "{{ .Values.channels.email.subjectPrefix }}"
                 - name: SMTP_MAX_LINES_PER_SECTION
-                  value: "{{ .Values.smtp.maxLinesPerSection }}"
+                  value: "{{ .Values.channels.email.maxLinesPerSection }}"
                 - name: ALERT_WARNING_EVENTS_SURGE
                   value: "{{ .Values.alerts.warningEventsSurge }}"
                 - name: ALERT_WARNING_EVENTS_SURGE_THRESHOLD
@@ -49,27 +49,25 @@ spec:
                 - name: ALERT_PENDING_UNSCHEDULABLE_MIN_PODS
                   value: "{{ .Values.alerts.pendingUnschedulableMinPods }}"
                 - name: SMTP_USERNAME
-{{- if eq .Values.smtp.secretType "plain" }}
-                  value: "{{ .Values.smtp.username }}"
+{{- if kindIs "map" .Values.channels.email.username }}
+{{ toYaml .Values.channels.email.username | nindent 18 }}
 {{- else }}
-                  valueFrom:
-                    secretKeyRef:
-                      name: {{ .Values.secrets.name }}
-                      key: {{ .Values.secrets.smtpUsernameKey }}
+                  value: "{{ default "" .Values.channels.email.username }}"
 {{- end }}
                 - name: SMTP_PASSWORD
-{{- if eq .Values.smtp.secretType "plain" }}
-                  value: "{{ .Values.smtp.password }}"
+{{- if kindIs "map" .Values.channels.email.password }}
+{{ toYaml .Values.channels.email.password | nindent 18 }}
 {{- else }}
-                  valueFrom:
-                    secretKeyRef:
-                      name: {{ .Values.secrets.name }}
-                      key: {{ .Values.secrets.smtpPasswordKey }}
+                  value: "{{ default "" .Values.channels.email.password }}"
 {{- end }}
 {{- end }}
 {{- if .Values.channels.webhook.enabled }}
                 - name: WEBHOOK_URL
-                  value: "{{ .Values.webhook.url }}"
+{{- if kindIs "map" .Values.channels.webhook.url }}
+{{ toYaml .Values.channels.webhook.url | nindent 18 }}
+{{- else }}
+                  value: "{{ default "" .Values.channels.webhook.url }}"
+{{- end }}
 {{- end }}
               volumeMounts:
                 - name: script

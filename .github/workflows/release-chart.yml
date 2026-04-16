@@ -33,13 +33,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          STRICT_MODE=1 sh ./scripts/test/run-syntax-check.sh .
+          STRICT_MODE=1 sh ./tests/run-syntax-check.sh .
 
       - name: Run mock integration tests
         shell: bash
         run: |
           set -euo pipefail
           sh ./tests/run-mock-tests.sh
+
+      - name: Run template regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh ./tests/run-template-regression-tests.sh
 
       - name: Bump chart patch version
         id: bump
