@@ -56,9 +56,28 @@ alerts:
   podCrashLoop: true
   podImagePullError: true
   podError: true
+  podOOMKilled: true
+  podEvicted: true
   podRestartThreshold: 2
+  pendingUnschedulable: true
+  pendingUnschedulableMinPods: 1
+  warningEventsSurge: false
+  warningEventsSurgeThreshold: 25
+  probeFailures: true
   nodeNotReady: true
   nodePressure: true
+  deploymentsHealthCheck: true
+
+deploymentsHealthCheck:
+  targets:
+    - kube-system/coredns
+    - kube-system/metrics-server
+    - kube-system/local-path-provisioner
+  settings:
+    minReadyPercent: 100
+    includeZeroDesired: true
+    maxReportedLines: 10
+    includeMissingTargets: true
 
 filters:
   excludeNamespaces:

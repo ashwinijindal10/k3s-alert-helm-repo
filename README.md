@@ -8,10 +8,16 @@ Lightweight CronJob-based alerting for pod and node failures in k3s/k8s.
   - CrashLoopBackOff
   - ImagePullBackOff / ErrImagePull
   - Error / Failed
+  - OOMKilled (from container terminated/last terminated reason)
+  - Evicted
+  - Pending + Unschedulable pods
+  - Probe failures from Warning events (Readiness/Liveness)
   - Restart count over configured threshold (`alerts.podRestartThreshold`)
 - Node failures:
   - NotReady
   - Pressure conditions (MemoryPressure, DiskPressure, PIDPressure)
+- Cluster critical component failures:
+  - kube-system critical deployments below desired ready replicas
 
 Restart-threshold alerts are one-time per pod after threshold crossing and are tracked with pod annotation `k3s-alert/restart-threshold-notified=true`.
 
@@ -21,6 +27,13 @@ This chart is intentionally simple and resource-friendly:
 - Single CronJob run per interval
 - Stateless dedup/cooldown state in pod filesystem (`/tmp`)
 - Very low default CPU/memory requests
+
+Low-overhead defaults for stability:
+
+- Warning-event surge detection is disabled by default (`alerts.warningEventsSurge: false`)
+- Warning events scan is capped to latest 200 warning lines per run
+- Pending-unschedulable alert can be threshold-gated by pod count (`alerts.pendingUnschedulableMinPods`)
+- Each run emits a self-metrics log line (`Run metrics`) with duration, API calls, and scanned row counts
 
 ## Notification channels
 
@@ -193,8 +206,110 @@ helm search repo k3s-alert/k3s-alert --versions
 - `rateLimit.periodSeconds`: `900`
 - `rateLimit.maxEmails`: `5`
 - `alerts.podRestartThreshold`: `2` (`-1` disables restart-threshold alerts)
+- `alerts.podOOMKilled`: `true`
+- `alerts.podEvicted`: `true`
+- `alerts.pendingUnschedulable`: `true`
+- `alerts.pendingUnschedulableMinPods`: `1`
+- `alerts.probeFailures`: `true`
+- `alerts.warningEventsSurge`: `false`
+- `alerts.warningEventsSurgeThreshold`: `25`
+- `alerts.deploymentsHealthCheck`: `true`
+- `deploymentsHealthCheck.targets`: `kube-system/coredns`, `kube-system/metrics-server`, `kube-system/local-path-provisioner`
+- `deploymentsHealthCheck.settings.minReadyPercent`: `100`
+- `deploymentsHealthCheck.settings.includeZeroDesired`: `true`
+- `deploymentsHealthCheck.settings.maxReportedLines`: `10`
+- `deploymentsHealthCheck.settings.includeMissingTargets`: `true`
 - `cronJob.concurrencyPolicy`: `Forbid`
 - `filters.excludeNamespaces`: `kube-system`, `kube-public`
+
+## Configuration Parameter Details
+
+### Alert switches
+
+- `alerts.podCrashLoop`
+  - Detects `CrashLoopBackOff` pod states.
+  - Keep enabled in most environments.
+
+- `alerts.podImagePullError`
+  - Detects `ImagePullBackOff` and `ErrImagePull`.
+  - Useful for registry/auth/image tag issues.
+
+- `alerts.podError`
+  - Detects generic pod error/failure states from pod listings.
+  - May be broad; combine with cooldown/backoff to reduce noise.
+
+- `alerts.podOOMKilled`
+  - Detects OOM via container terminated/last-terminated reason.
+  - High-signal for app stability.
+
+- `alerts.podEvicted`
+  - Detects evicted pods, commonly from memory or disk pressure.
+  - Strong cluster-capacity indicator.
+
+- `alerts.pendingUnschedulable`
+  - Detects pending pods with unschedulable condition.
+  - Pair with `alerts.pendingUnschedulableMinPods` to avoid single-pod noise.
+
+- `alerts.probeFailures`
+  - Detects readiness/liveness probe failures from warning events.
+  - Good early indicator of app degradation.
+
+- `alerts.warningEventsSurge`
+  - Detects warning-event storms when enabled.
+  - Keep disabled by default in low-noise setups.
+
+- `alerts.nodeNotReady`
+  - Detects nodes not reporting `Ready=True`.
+  - Critical cluster-health signal.
+
+- `alerts.nodePressure`
+  - Detects memory/disk/PID pressure node conditions.
+  - Critical for preventing cascading failures.
+
+- `alerts.deploymentsHealthCheck`
+  - Enables deployment health checks using `deploymentsHealthCheck.targets`.
+  - Works for any namespace, not only `kube-system`.
+
+### Deployment health configuration
+
+- `deploymentsHealthCheck.targets`
+  - List of `namespace/name` deployment targets to monitor.
+  - Example: `kube-system/coredns`.
+  - Keep this list focused on critical components and business-critical deployments.
+
+- `deploymentsHealthCheck.settings.minReadyPercent`
+  - Minimum ready percentage required for a target deployment.
+  - Typical values:
+    - `100`: strict mode (all desired replicas must be ready).
+    - `50-99`: tolerant mode for non-critical workloads.
+
+- `deploymentsHealthCheck.settings.includeZeroDesired`
+  - If `true`, deployments with desired replicas `0` are reported as unhealthy.
+  - Set `false` if you intentionally scale some targets to zero.
+
+- `deploymentsHealthCheck.settings.maxReportedLines`
+  - Caps lines included in alert body for deployment-health findings.
+  - Prevents oversized notifications and keeps messages readable.
+
+- `deploymentsHealthCheck.settings.includeMissingTargets`
+  - If `true`, missing target deployments are reported.
+  - Recommended `true` for critical control-plane and core infra checks.
+
+### Noise and load control
+
+- `cooldownSeconds`
+  - Minimum delay between sends for any alert payload.
+
+- `backoff.*`
+  - Exponential suppression for repeated similar alerts.
+
+- `rateLimit.*`
+  - Hard cap on outbound emails per time window.
+
+- `schedule`
+  - Poll interval for the CronJob.
+  - `*/2 * * * *` is a good default for low overhead.
+  - Increase interval for very large clusters if API pressure is a concern.
 
 ## Configuration examples
 
@@ -335,6 +450,37 @@ With `filterMode: basic`:
 With `filterMode: strict`:
 
 - Run 1 and Run 2 are treated as different (full lines changed due to pod names/restart counts), so backoff resets as a new pattern.
+
+### Critical cluster stability checks
+
+```yaml
+alerts:
+  podOOMKilled: true
+  podEvicted: true
+  pendingUnschedulable: true
+  pendingUnschedulableMinPods: 2
+  probeFailures: true
+  warningEventsSurge: false
+  warningEventsSurgeThreshold: 25
+  deploymentsHealthCheck: true
+
+deploymentsHealthCheck:
+  targets:
+    - kube-system/coredns
+    - kube-system/metrics-server
+    - kube-system/local-path-provisioner
+  settings:
+    minReadyPercent: 100
+    includeZeroDesired: true
+    maxReportedLines: 10
+    includeMissingTargets: true
+```
+
+Recommended tuning:
+
+- Keep `alerts.warningEventsSurge` disabled unless you actively need event-storm detection.
+- Increase `alerts.pendingUnschedulableMinPods` to `2` or `3` in large clusters to reduce noise.
+- Keep `filters.excludeNamespaces` for non-business namespaces unless you want full visibility.
 
 ### 7) Email subject and body templates
 

@@ -40,6 +40,12 @@ spec:
                   value: "{{ .Values.smtp.subjectPrefix }}"
                 - name: SMTP_MAX_LINES_PER_SECTION
                   value: "{{ .Values.smtp.maxLinesPerSection }}"
+                - name: ALERT_WARNING_EVENTS_SURGE
+                  value: "{{ .Values.alerts.warningEventsSurge }}"
+                - name: ALERT_WARNING_EVENTS_SURGE_THRESHOLD
+                  value: "{{ .Values.alerts.warningEventsSurgeThreshold }}"
+                - name: ALERT_PENDING_UNSCHEDULABLE_MIN_PODS
+                  value: "{{ .Values.alerts.pendingUnschedulableMinPods }}"
                 - name: SMTP_USERNAME
 {{- if eq .Values.smtp.secretType "plain" }}
                   value: "{{ .Values.smtp.username }}"
