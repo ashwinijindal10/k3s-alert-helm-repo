@@ -3,7 +3,17 @@ entries:
   k3s-alert:
   - apiVersion: v2
     appVersion: "3.0"
-    created: "2026-04-16T22:09:16.930397+05:30"
+    created: "2026-04-16T17:49:59.635024162Z"
+    description: Lightweight optimized Kubernetes alert cronjob
+    digest: 9196ac9985afefae5aac76e6fb09c71371cb10910bb0bef41ae31ecce09dcdea
+    name: k3s-alert
+    type: application
+    urls:
+    - https://ashwinijindal10.github.io/k3s-alert-helm-repo/charts/k3s-alert-0.3.7.tgz
+    version: 0.3.7
+  - apiVersion: v2
+    appVersion: "3.0"
+    created: "2026-04-16T17:49:59.634390368Z"
     description: Lightweight optimized Kubernetes alert cronjob
     digest: e675d2490322eb5f6e9759ea8505b47ece7b6e47e9a6611dc75b5c4954b7021a
     name: k3s-alert
@@ -51,4 +61,4 @@ entries:
     urls:
     - https://ashwinijindal10.github.io/k3s-alert-helm-repo/charts/k3s-alert-0.3.1.tgz
     version: 0.3.1
-generated: "2026-04-16T22:09:16.929492+05:30"
+generated: "2026-04-16T17:49:59.633688546Z"
