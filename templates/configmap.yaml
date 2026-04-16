@@ -20,8 +20,10 @@ data:
     RATE_LIMIT_ENABLED={{ .Values.rateLimit.enabled }}
     RATE_LIMIT_PERIOD={{ .Values.rateLimit.periodSeconds }}
     RATE_LIMIT_MAX_EMAILS={{ .Values.rateLimit.maxEmails }}
+    POD_RESTART_THRESHOLD={{ .Values.alerts.podRestartThreshold }}
 
     ALERTS=""
+    RESTART_ALERT_TARGETS=""
     EXCLUDE_NAMESPACES="{{ join "|" .Values.filters.excludeNamespaces }}"
 
     echo "Running checks..."
@@ -47,6 +49,53 @@ data:
     [ -n "$ERR" ] && ALERTS="$ALERTS\n[Errors]\n$ERR"
     {{- end }}
 
+    if [ "$POD_RESTART_THRESHOLD" -ge 0 ]; then
+      RESTART_CANDIDATES=$(echo "$PODS" | awk -v threshold="$POD_RESTART_THRESHOLD" '
+        {
+          ns=$1
+          pod=$2
+          status=$4
+          restarts=$5
+          gsub(/[^0-9]/, "", restarts)
+          if (restarts == "") {
+            restarts=0
+          }
+          if ((restarts + 0) > threshold) {
+            print ns" "pod" "status" "restarts
+          }
+        }
+      ' || true)
+
+      if [ -n "$RESTART_CANDIDATES" ]; then
+        NEW_RESTART_ALERTS=""
+        RESTART_SCAN_FILE=$(mktemp)
+        printf '%s\n' "$RESTART_CANDIDATES" > "$RESTART_SCAN_FILE"
+        while IFS= read -r candidate; do
+          [ -z "$candidate" ] && continue
+          NS=$(echo "$candidate" | awk '{print $1}')
+          POD=$(echo "$candidate" | awk '{print $2}')
+          NOTIFIED=$(kubectl get pod "$POD" -n "$NS" -o jsonpath="{.metadata.annotations['k3s-alert/restart-threshold-notified']}" 2>/dev/null || true)
+          if [ "$NOTIFIED" = "true" ]; then
+            continue
+          fi
+          if [ -z "$NEW_RESTART_ALERTS" ]; then
+            NEW_RESTART_ALERTS="$candidate"
+          else
+            NEW_RESTART_ALERTS="$NEW_RESTART_ALERTS\n$candidate"
+          fi
+
+          if [ -z "$RESTART_ALERT_TARGETS" ]; then
+            RESTART_ALERT_TARGETS="$NS|$POD"
+          else
+            RESTART_ALERT_TARGETS="$RESTART_ALERT_TARGETS\n$NS|$POD"
+          fi
+        done < "$RESTART_SCAN_FILE"
+        rm -f "$RESTART_SCAN_FILE"
+
+        [ -n "$NEW_RESTART_ALERTS" ] && ALERTS="$ALERTS\n[PodRestarts]\n$NEW_RESTART_ALERTS"
+      fi
+    fi
+
     {{- if .Values.alerts.nodeNotReady }}
     NODE_NOT_READY=$(echo "$NODES_STATUS" | awk -F'|' '$2 !~ /Ready=True/ {print $1"|"$2}' || true)
     [ -n "$NODE_NOT_READY" ] && ALERTS="$ALERTS\n[NodeNotReady]\n$NODE_NOT_READY"
@@ -68,6 +117,62 @@ data:
       exit 0
     fi
 
+    append_csv() {
+      VAR_NAME="$1"
+      VALUE="$2"
+      eval "CURRENT=\${$VAR_NAME:-}"
+      if [ -z "$CURRENT" ]; then
+        eval "$VAR_NAME=\"$VALUE\""
+      else
+        eval "$VAR_NAME=\"$CURRENT,$VALUE\""
+      fi
+    }
+
+    count_section_lines() {
+      SECTION="$1"
+      printf '%s\n' "$FULL_BODY" | awk -v sec="$SECTION" '
+        $0 == "[" sec "]" { in_sec = 1; next }
+        $0 ~ /^\[/ { in_sec = 0 }
+        in_sec && NF { c++ }
+        END { print c + 0 }
+      '
+    }
+
+    render_section_lines() {
+      SECTION="$1"
+      LIMIT="$2"
+      printf '%s\n' "$FULL_BODY" | awk -v sec="$SECTION" -v lim="$LIMIT" '
+        $0 == "[" sec "]" { in_sec = 1; next }
+        $0 ~ /^\[/ { in_sec = 0 }
+        in_sec && NF {
+          if (c < lim) {
+            print
+          }
+          c++
+        }
+      '
+    }
+
+    FULL_BODY=$(printf '%b\n' "$ALERTS" | sed '/^$/d')
+    CRASH_COUNT=$(count_section_lines "CrashLoop")
+    IMAGE_COUNT=$(count_section_lines "ImagePull")
+    ERROR_COUNT=$(count_section_lines "Errors")
+    NODE_NOT_READY_COUNT=$(count_section_lines "NodeNotReady")
+    NODE_PRESSURE_COUNT=$(count_section_lines "NodePressure")
+    POD_RESTART_COUNT=$(count_section_lines "PodRestarts")
+    TOTAL_COUNT=$((CRASH_COUNT + IMAGE_COUNT + ERROR_COUNT + NODE_NOT_READY_COUNT + NODE_PRESSURE_COUNT + POD_RESTART_COUNT))
+
+    DETECTED_ALERTS=""
+    [ "$CRASH_COUNT" -gt 0 ] && append_csv DETECTED_ALERTS "CrashLoop:$CRASH_COUNT"
+    [ "$IMAGE_COUNT" -gt 0 ] && append_csv DETECTED_ALERTS "ImagePull:$IMAGE_COUNT"
+    [ "$ERROR_COUNT" -gt 0 ] && append_csv DETECTED_ALERTS "Errors:$ERROR_COUNT"
+    [ "$NODE_NOT_READY_COUNT" -gt 0 ] && append_csv DETECTED_ALERTS "NodeNotReady:$NODE_NOT_READY_COUNT"
+    [ "$NODE_PRESSURE_COUNT" -gt 0 ] && append_csv DETECTED_ALERTS "NodePressure:$NODE_PRESSURE_COUNT"
+    [ "$POD_RESTART_COUNT" -gt 0 ] && append_csv DETECTED_ALERTS "PodRestarts:$POD_RESTART_COUNT"
+    [ -z "$DETECTED_ALERTS" ] && DETECTED_ALERTS="none"
+
+    echo "Alert scan summary: total=$TOTAL_COUNT detected=$DETECTED_ALERTS"
+
     HASH=$(echo "$ALERTS" | md5sum | cut -d' ' -f1)
     if [ "$BACKOFF_FILTER_MODE" = "strict" ]; then
       SIMILAR_HASH="$HASH"
@@ -83,7 +188,7 @@ data:
     LAST=$(cat $LAST_SENT_FILE 2>/dev/null || echo 0)
 
     if [ $((NOW - LAST)) -lt $COOLDOWN ]; then
-      echo "Cooldown active"
+      echo "Alert delivery: sent=0 skipped=cooldown_active total=$TOTAL_COUNT detected=$DETECTED_ALERTS"
       exit 0
     fi
 
@@ -120,36 +225,10 @@ data:
     }
 
     if should_backoff_skip; then
-      echo "Exponential backoff active for similar alert"
+      echo "Alert delivery: sent=0 skipped=backoff_active total=$TOTAL_COUNT detected=$DETECTED_ALERTS"
       exit 0
     fi
 
-    count_section_lines() {
-      SECTION="$1"
-      printf '%s\n' "$FULL_BODY" | awk -v sec="$SECTION" '
-        $0 == "[" sec "]" { in_sec = 1; next }
-        $0 ~ /^\[/ { in_sec = 0 }
-        in_sec && NF { c++ }
-        END { print c + 0 }
-      '
-    }
-
-    render_section_lines() {
-      SECTION="$1"
-      LIMIT="$2"
-      printf '%s\n' "$FULL_BODY" | awk -v sec="$SECTION" -v lim="$LIMIT" '
-        $0 == "[" sec "]" { in_sec = 1; next }
-        $0 ~ /^\[/ { in_sec = 0 }
-        in_sec && NF {
-          if (c < lim) {
-            print
-          }
-          c++
-        }
-      '
-    }
-
-    FULL_BODY=$(printf '%b\n' "$ALERTS" | sed '/^$/d')
     TEMPLATE_MODE="${SMTP_MAIL_FORMAT:-structured}"
     if [ "$TEMPLATE_MODE" = "full" ]; then
       TEMPLATE_MODE="structured"
@@ -157,13 +236,6 @@ data:
       TEMPLATE_MODE="compact"
     fi
     MAX_LINES="${SMTP_MAX_LINES_PER_SECTION:-5}"
-
-    CRASH_COUNT=$(count_section_lines "CrashLoop")
-    IMAGE_COUNT=$(count_section_lines "ImagePull")
-    ERROR_COUNT=$(count_section_lines "Errors")
-    NODE_NOT_READY_COUNT=$(count_section_lines "NodeNotReady")
-    NODE_PRESSURE_COUNT=$(count_section_lines "NodePressure")
-    TOTAL_COUNT=$((CRASH_COUNT + IMAGE_COUNT + ERROR_COUNT + NODE_NOT_READY_COUNT + NODE_PRESSURE_COUNT))
 
     if [ "$NODE_NOT_READY_COUNT" -gt 0 ] || [ "$NODE_PRESSURE_COUNT" -gt 0 ] || [ "$TOTAL_COUNT" -ge 10 ]; then
       SEVERITY="CRITICAL"
@@ -176,12 +248,12 @@ data:
     fi
 
     SUBJECT_PREFIX="${SMTP_SUBJECT_PREFIX:-K3S ALERT}"
-    SUBJECT="$SUBJECT_PREFIX $SEVERITY CrashLoop:$CRASH_COUNT ImagePull:$IMAGE_COUNT Errors:$ERROR_COUNT NodeNotReady:$NODE_NOT_READY_COUNT NodePressure:$NODE_PRESSURE_COUNT"
+    SUBJECT="$SUBJECT_PREFIX $SEVERITY CrashLoop:$CRASH_COUNT ImagePull:$IMAGE_COUNT Errors:$ERROR_COUNT NodeNotReady:$NODE_NOT_READY_COUNT NodePressure:$NODE_PRESSURE_COUNT PodRestarts:$POD_RESTART_COUNT"
 
     if [ "$TEMPLATE_MODE" = "compact" ]; then
-      BODY="Summary: severity=$SEVERITY total=$TOTAL_COUNT crashloop=$CRASH_COUNT imagepull=$IMAGE_COUNT errors=$ERROR_COUNT nodeNotReady=$NODE_NOT_READY_COUNT nodePressure=$NODE_PRESSURE_COUNT\n\nTop lines:\n$(printf '%s\n' "$FULL_BODY" | head -n 8)"
+      BODY="Summary: severity=$SEVERITY total=$TOTAL_COUNT crashloop=$CRASH_COUNT imagepull=$IMAGE_COUNT errors=$ERROR_COUNT nodeNotReady=$NODE_NOT_READY_COUNT nodePressure=$NODE_PRESSURE_COUNT podRestarts=$POD_RESTART_COUNT\n\nTop lines:\n$(printf '%s\n' "$FULL_BODY" | head -n 8)"
     else
-      BODY="K3S Alert Summary\nGeneratedAt: $(date -u +%Y-%m-%dT%H:%M:%SZ)\nSeverity: $SEVERITY\nTotalIssues: $TOTAL_COUNT\n\nBreakdown:\n- CrashLoop: $CRASH_COUNT\n- ImagePull: $IMAGE_COUNT\n- Errors: $ERROR_COUNT\n- NodeNotReady: $NODE_NOT_READY_COUNT\n- NodePressure: $NODE_PRESSURE_COUNT\n"
+      BODY="K3S Alert Summary\nGeneratedAt: $(date -u +%Y-%m-%dT%H:%M:%SZ)\nSeverity: $SEVERITY\nTotalIssues: $TOTAL_COUNT\n\nBreakdown:\n- CrashLoop: $CRASH_COUNT\n- ImagePull: $IMAGE_COUNT\n- Errors: $ERROR_COUNT\n- NodeNotReady: $NODE_NOT_READY_COUNT\n- NodePressure: $NODE_PRESSURE_COUNT\n- PodRestarts: $POD_RESTART_COUNT\n"
 
       if [ "$CRASH_COUNT" -gt 0 ]; then
         BODY="$BODY\n\n[CrashLoop]\n$(render_section_lines "CrashLoop" "$MAX_LINES")"
@@ -197,6 +269,9 @@ data:
       fi
       if [ "$NODE_PRESSURE_COUNT" -gt 0 ]; then
         BODY="$BODY\n\n[NodePressure]\n$(render_section_lines "NodePressure" "$MAX_LINES")"
+      fi
+      if [ "$POD_RESTART_COUNT" -gt 0 ]; then
+        BODY="$BODY\n\n[PodRestarts]\n$(render_section_lines "PodRestarts" "$MAX_LINES")"
       fi
 
       BODY="$BODY\n\nControls: cooldown=${COOLDOWN}s, backoff=${BACKOFF_ENABLED}/${BACKOFF_FILTER_MODE}, rateLimit=${RATE_LIMIT_ENABLED}(${RATE_LIMIT_MAX_EMAILS}/${RATE_LIMIT_PERIOD}s)"
@@ -230,13 +305,28 @@ data:
       return 0
     }
 
+    mark_restart_threshold_notified() {
+      if [ -z "${RESTART_ALERT_TARGETS:-}" ]; then
+        return 0
+      fi
+
+      printf '%b\n' "$RESTART_ALERT_TARGETS" | while IFS='|' read -r ns pod; do
+        [ -z "$ns" ] && continue
+        [ -z "$pod" ] && continue
+        kubectl annotate pod "$pod" -n "$ns" k3s-alert/restart-threshold-notified=true --overwrite >/dev/null 2>&1 || true
+      done
+    }
+
     SENT_ANY=0
+    SENT_CHANNELS=""
+    SKIPPED_REASONS=""
 
     {{- if .Values.channels.email.enabled }}
     if [ -n "${SMTP_HOST:-}" ] && [ -n "${SMTP_TO:-}" ] && [ -n "${SMTP_USERNAME:-}" ] && [ -n "${SMTP_PASSWORD:-}" ]; then
       RECIPIENTS=$(printf '%s' "$SMTP_TO" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed '/^$/d')
       if [ -z "$RECIPIENTS" ]; then
         echo "No valid SMTP recipients found"
+        append_csv SKIPPED_REASONS "email_no_recipients"
         exit 0
       fi
 
@@ -247,6 +337,7 @@ data:
 
       if ! can_send_email; then
         echo "Email rate limit active: max $RATE_LIMIT_MAX_EMAILS emails per $RATE_LIMIT_PERIOD seconds"
+        append_csv SKIPPED_REASONS "email_rate_limited"
       else
         if [ -n "${SMTP_LOGIN_OPTIONS:-}" ]; then
           echo -e "Subject: $SUBJECT\n\n$BODY" | curl -sS --connect-timeout 10 --max-time 20 --url "smtp://$SMTP_HOST:$SMTP_PORT" \
@@ -266,9 +357,11 @@ data:
         fi
         echo "Email alert sent"
         SENT_ANY=1
+        append_csv SENT_CHANNELS "email"
       fi
     else
       echo "Email channel enabled but required SMTP vars are missing"
+      append_csv SKIPPED_REASONS "email_missing_config"
     fi
     {{- end }}
 
@@ -280,12 +373,19 @@ data:
         -d "$PAYLOAD" >/dev/null
       echo "Webhook alert sent"
       SENT_ANY=1
+      append_csv SENT_CHANNELS "webhook"
     else
       echo "Webhook channel enabled but WEBHOOK_URL is empty"
+      append_csv SKIPPED_REASONS "webhook_missing_url"
     fi
     {{- end }}
 
     if [ "$SENT_ANY" -eq 1 ]; then
+      [ -z "$SENT_CHANNELS" ] && SENT_CHANNELS="unknown"
+      [ -z "$SKIPPED_REASONS" ] && SKIPPED_REASONS="none"
+      echo "Alert delivery: sent=1 channels=$SENT_CHANNELS skipped=$SKIPPED_REASONS total=$TOTAL_COUNT detected=$DETECTED_ALERTS"
+      mark_restart_threshold_notified
+
       echo "$HASH" > "$STATE_FILE"
       echo "$NOW" > "$LAST_SENT_FILE"
 
@@ -301,4 +401,7 @@ data:
         NEXT_ALLOWED=$((NOW + DELAY))
         echo "$SIMILAR_HASH $NEXT_LEVEL $NEXT_ALLOWED" > "$BACKOFF_FILE"
       fi
+    else
+      [ -z "$SKIPPED_REASONS" ] && SKIPPED_REASONS="no_channel_sent"
+      echo "Alert delivery: sent=0 skipped=$SKIPPED_REASONS total=$TOTAL_COUNT detected=$DETECTED_ALERTS"
     fi

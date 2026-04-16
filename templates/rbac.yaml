@@ -9,7 +9,10 @@ metadata:
   name: k3s-alert
 rules:
   - apiGroups: [""]
-    resources: ["pods", "nodes", "nodes/status"]
+    resources: ["pods"]
+    verbs: ["get", "list", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/status"]
     verbs: ["get", "list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

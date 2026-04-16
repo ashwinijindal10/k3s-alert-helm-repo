@@ -8,9 +8,12 @@ Lightweight CronJob-based alerting for pod and node failures in k3s/k8s.
   - CrashLoopBackOff
   - ImagePullBackOff / ErrImagePull
   - Error / Failed
+  - Restart count over configured threshold (`alerts.podRestartThreshold`)
 - Node failures:
   - NotReady
   - Pressure conditions (MemoryPressure, DiskPressure, PIDPressure)
+
+Restart-threshold alerts are one-time per pod after threshold crossing and are tracked with pod annotation `k3s-alert/restart-threshold-notified=true`.
 
 This chart is intentionally simple and resource-friendly:
 
@@ -189,6 +192,7 @@ helm search repo k3s-alert/k3s-alert --versions
 - `rateLimit.enabled`: `true`
 - `rateLimit.periodSeconds`: `900`
 - `rateLimit.maxEmails`: `5`
+- `alerts.podRestartThreshold`: `2` (`-1` disables restart-threshold alerts)
 - `cronJob.concurrencyPolicy`: `Forbid`
 - `filters.excludeNamespaces`: `kube-system`, `kube-public`
 

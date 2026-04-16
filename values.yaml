@@ -56,6 +56,7 @@ alerts:
   podCrashLoop: true
   podImagePullError: true
   podError: true
+  podRestartThreshold: 2
   nodeNotReady: true
   nodePressure: true
 
