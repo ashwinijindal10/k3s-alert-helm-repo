@@ -25,8 +25,18 @@ This chart is intentionally simple and resource-friendly:
 
 - Polling model (no long-running watch loops)
 - Single CronJob run per interval
-- Stateless dedup/cooldown state in pod filesystem (`/tmp`)
+- Persistent dedupe state in ConfigMap (`k3s-alert-state`)
+- Persistent cooldown/backoff/rate-limit state in ConfigMap (`k3s-alert-state`)
 - Very low default CPU/memory requests
+
+Script source layout:
+
+- Main runtime script is maintained in `files/scripts/check.sh.tpl`
+- State persistence and guards are in `files/scripts/lib/state.sh.tpl`
+- Alert policy logic (dedupe/backoff/rate-limit) is in `files/scripts/lib/policy.sh.tpl`
+- Detection logic is in `files/scripts/lib/detection.sh.tpl`
+- Notification delivery logic is in `files/scripts/lib/notify.sh.tpl`
+- It is rendered into ConfigMap `k3s-alert-script` as `check.sh`
 
 Low-overhead defaults for stability:
 
@@ -161,6 +171,14 @@ kubectl logs -n kube-system job/<latest-job-name>
 ```
 
 ## Rebuild and publish chart (after changes)
+
+Automatic mode (recommended):
+
+- A GitHub Actions workflow (`.github/workflows/release-chart.yml`) runs on every push to `main`.
+- It automatically bumps chart patch version in `Chart.yaml`, packages into `docs/charts`, rebuilds `docs/charts/index.yaml`, and commits artifacts back.
+- Result: new chart version becomes available automatically from the same Helm repo URL.
+
+Manual fallback:
 
 Run these steps when `Chart.yaml`, `templates/`, or chart behavior changes.
 
@@ -297,14 +315,21 @@ helm search repo k3s-alert/k3s-alert --versions
 
 ### Noise and load control
 
+- Persistent dedupe (default behavior)
+  - Active findings are fingerprinted and stored in `k3s-alert-state`.
+  - The same active finding is alerted once, then suppressed while it remains active.
+  - If a finding resolves and later reappears, it alerts again.
+
 - `cooldownSeconds`
   - Minimum delay between sends for any alert payload.
 
 - `backoff.*`
   - Exponential suppression for repeated similar alerts.
+  - State is persisted across CronJob runs, so `filterMode: strict` remains effective.
 
 - `rateLimit.*`
   - Hard cap on outbound emails per time window.
+  - State is persisted across CronJob runs.
 
 - `schedule`
   - Poll interval for the CronJob.
@@ -559,6 +584,9 @@ The chart creates:
   - `pods`
   - `nodes`
   - `nodes/status`
+  - `events`
+- ClusterRole with read/write permissions on:
+  - `configmaps` (used for dedupe state in `k3s-alert-state`)
 - ClusterRoleBinding bound to the release namespace ServiceAccount.
 
 ## Troubleshooting
@@ -582,6 +610,35 @@ helm template k3s-alert . -n kube-system
 ```
 
 ## How To Test
+
+### Script-focused checks (recommended before deploy)
+
+1. Lint and syntax-check rendered runtime script.
+
+```bash
+./scripts/test/run-syntax-check.sh .
+```
+
+What this does:
+
+- Runs `helm template`
+- Extracts rendered `check.sh` from ConfigMap `k3s-alert-script`
+- Runs `sh -n` syntax validation
+- Runs `shellcheck` if installed
+
+2. Run deterministic mock integration tests (no cluster required).
+
+```bash
+./tests/run-mock-tests.sh
+```
+
+What this validates:
+
+- First detection sends alert
+- Duplicate active finding is suppressed on next run
+- Resolution clears active dedupe state
+- Reappearance alerts again
+- Outbound notification count matches expected behavior
 
 ### 1) Deploy chart
 
@@ -620,6 +677,7 @@ kubectl delete pod -n default k3s-alert-test-fail --ignore-not-found
 
 ## Known behavior
 
-- Dedup/cooldown files are stored in `/tmp` inside job pods.
-- Because design is stateless, pod restart/new pod may send alerts again for the same ongoing issue.
-- This is intentional to keep the chart simple and avoid persistent storage overhead.
+- Dedupe state is persisted in ConfigMap `k3s-alert-state`.
+- Ongoing identical findings are suppressed after first successful alert.
+- If an issue resolves and later reappears, alert is sent again.
+- Cooldown, backoff, and email rate-limit are persisted in `k3s-alert-state` and survive CronJob pod restarts.

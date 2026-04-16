@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: k3s-alert-state
+data:
+  notified_keys: ""
+  last_sent: "0"
+  backoff_hash: ""
+  backoff_level: "0"
+  backoff_next_allowed: "0"
+  email_rate_history: ""
