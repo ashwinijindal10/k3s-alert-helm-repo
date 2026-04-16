@@ -22,6 +22,7 @@ smtp:
   from: ""
   to: ""
   secretType: externalSecret
+  loginOptions: ""
   mailFormat: structured
   subjectPrefix: "K3S ALERT"
   maxLinesPerSection: 5

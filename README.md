@@ -70,7 +70,7 @@ Backward compatible aliases are also supported:
 1. Add and update repository.
 
 ```bash
-helm repo add k3s-alert https://raw.githubusercontent.com/ashwinijindal10/k3s-alert-helm-repo/main/docs/charts
+helm repo add k3s-alert https://ashwinijindal10.github.io/k3s-alert-helm-repo/charts
 helm repo update
 ```
 
@@ -160,7 +160,7 @@ helm package . --destination docs/charts
 helm repo index docs/charts \
   --url https://ashwinijindal10.github.io/k3s-alert-helm-repo/charts
 
-git add Chart.yaml docs/charts/
+git add Chart.yaml values.yaml docs/charts/
 git commit -m "chore(release): package chart and update index"
 git push origin main
 ```
@@ -182,7 +182,7 @@ helm search repo k3s-alert/k3s-alert --versions
 - `smtp.subjectPrefix`: `K3S ALERT`
 - `smtp.maxLinesPerSection`: `5`
 - `backoff.enabled`: `true`
-- `backoff.filterMode`: `basic`
+- `backoff.filterMode`: `strict`
 - `backoff.baseDelaySeconds`: `120`
 - `backoff.factor`: `2`
 - `backoff.maxDelaySeconds`: `36000`
